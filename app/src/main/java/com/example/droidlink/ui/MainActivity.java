@@ -18,6 +18,7 @@ import com.example.droidlink.service.ScreenCaptureService;
 public class MainActivity extends AppCompatActivity {
 
     private Button btnStartMirroring;
+    private Button btnStopMirroring;
     private TextView tvStatus;
 
     private MediaProjectionManager mediaProjectionManager;
@@ -30,15 +31,21 @@ public class MainActivity extends AppCompatActivity {
                         if (result.getResultCode() == Activity.RESULT_OK
                                 && result.getData() != null) {
 
-                            tvStatus.setText("● Permission granted");
+                            tvStatus.setText("● Mirroring");
 
                             startScreenCaptureService(
                                     result.getData()
                             );
 
+                            btnStartMirroring.setEnabled(false);
+                            btnStopMirroring.setEnabled(true);
+
                         } else {
 
                             tvStatus.setText("● Permission denied");
+
+                            btnStartMirroring.setEnabled(true);
+                            btnStopMirroring.setEnabled(false);
                         }
                     }
             );
@@ -49,6 +56,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         btnStartMirroring = findViewById(R.id.btnStartMirroring);
+        btnStopMirroring = findViewById(R.id.btnStopMirroring);
+
         tvStatus = findViewById(R.id.tvStatus);
 
         mediaProjectionManager =
@@ -57,6 +66,10 @@ public class MainActivity extends AppCompatActivity {
 
         btnStartMirroring.setOnClickListener(v ->
                 requestScreenCapturePermission()
+        );
+
+        btnStopMirroring.setOnClickListener(v ->
+                stopScreenCaptureService()
         );
     }
 
@@ -91,5 +104,20 @@ public class MainActivity extends AppCompatActivity {
         } else {
             startService(serviceIntent);
         }
+    }
+    private void stopScreenCaptureService() {
+
+        Intent serviceIntent =
+                new Intent(
+                        this,
+                        ScreenCaptureService.class
+                );
+
+        stopService(serviceIntent);
+
+        tvStatus.setText("● Disconnected");
+
+        btnStartMirroring.setEnabled(true);
+        btnStopMirroring.setEnabled(false);
     }
 }
