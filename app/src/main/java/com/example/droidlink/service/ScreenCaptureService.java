@@ -2,22 +2,25 @@ package com.example.droidlink.service;
 
 import android.app.Activity;
 import android.app.Notification;
-import android.content.pm.ServiceInfo;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
 import android.content.Intent;
-import android.graphics.PixelFormat;
+import android.content.pm.ServiceInfo;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
-import android.media.Image;
-import android.media.ImageReader;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.DisplayMetrics;
 import android.util.Log;
+import android.view.Surface;
+
+import java.nio.ByteBuffer;
 
 public class ScreenCaptureService extends Service {
 
@@ -26,7 +29,11 @@ public class ScreenCaptureService extends Service {
 
     private MediaProjection mediaProjection;
     private VirtualDisplay virtualDisplay;
-    private ImageReader imageReader;
+    private MediaCodec mediaCodec;
+    private Surface inputSurface;
+    private Thread encoderThread;
+    private volatile boolean isEncoding = false;
+    private StreamingServer streamingServer;
 
     private int screenWidth;
     private int screenHeight;
@@ -146,8 +153,9 @@ public class ScreenCaptureService extends Service {
         DisplayMetrics metrics =
                 getResources().getDisplayMetrics();
 
-        screenWidth = metrics.widthPixels;
-        screenHeight = metrics.heightPixels;
+        // Ensure width and height are even numbers (required by H.264 encoders)
+        screenWidth = (metrics.widthPixels + 1) & ~1;
+        screenHeight = (metrics.heightPixels + 1) & ~1;
         screenDensity = metrics.densityDpi;
 
         Log.d(
@@ -158,45 +166,26 @@ public class ScreenCaptureService extends Service {
                         + screenHeight
         );
 
-        imageReader =
-                ImageReader.newInstance(
-                        screenWidth,
-                        screenHeight,
-                        PixelFormat.RGBA_8888,
-                        2
-                );
+        try {
+            MediaFormat format = MediaFormat.createVideoFormat(
+                    MediaFormat.MIMETYPE_VIDEO_AVC,
+                    screenWidth,
+                    screenHeight
+            );
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 2000000); // 2 Mbps
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1); // 1 second key frame interval
 
-        imageReader.setOnImageAvailableListener(
-                reader -> {
-
-                    Image image = null;
-
-                    try {
-
-                        image =
-                                reader.acquireLatestImage();
-
-                        if (image != null) {
-
-                            Log.d(
-                                    TAG,
-                                    "Frame captured: "
-                                            + image.getWidth()
-                                            + "x"
-                                            + image.getHeight()
-                            );
-                        }
-
-                    } finally {
-
-                        if (image != null) {
-                            image.close();
-                        }
-                    }
-
-                },
-                null
-        );
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            inputSurface = mediaCodec.createInputSurface();
+            mediaCodec.start();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to initialize H.264 MediaCodec encoder", e);
+            stopSelf();
+            return;
+        }
 
         virtualDisplay =
                 mediaProjection.createVirtualDisplay(
@@ -205,27 +194,93 @@ public class ScreenCaptureService extends Service {
                         screenHeight,
                         screenDensity,
                         DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                        imageReader.getSurface(),
+                        inputSurface,
                         null,
                         null
                 );
 
-        Log.d(
-                TAG,
-                "VirtualDisplay created"
-        );
+        Log.d(TAG, "VirtualDisplay created with H.264 encoder");
+
+        // Start local streaming server
+        streamingServer = new StreamingServer();
+        streamingServer.start();
+        Log.d(TAG, "Local streaming server started at tcp://" + StreamingServer.getLocalIpAddress() + ":8080");
+
+        isEncoding = true;
+        encoderThread = new Thread(this::encodeLoop, "H264EncoderThread");
+        encoderThread.start();
+    }
+
+    private void encodeLoop() {
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        while (isEncoding) {
+            try {
+                int outputBufferId = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
+                if (outputBufferId >= 0) {
+                    ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferId);
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                            outputBuffer.position(bufferInfo.offset);
+                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
+
+                            byte[] h264Data = new byte[bufferInfo.size];
+                            outputBuffer.get(h264Data);
+
+                            // Broadcast encoded H.264 NAL packet to connected clients
+                            if (streamingServer != null) {
+                                streamingServer.broadcastData(h264Data);
+                            }
+                        }
+                    }
+                    mediaCodec.releaseOutputBuffer(outputBufferId, false);
+                } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    MediaFormat newFormat = mediaCodec.getOutputFormat();
+                    Log.d(TAG, "Encoder format changed: " + newFormat);
+                }
+            } catch (Exception e) {
+                if (isEncoding) {
+                    Log.e(TAG, "Error in H.264 encoding loop", e);
+                }
+                break;
+            }
+        }
     }
 
     private void stopScreenCapture() {
+        isEncoding = false;
+
+        if (streamingServer != null) {
+            streamingServer.stop();
+            streamingServer = null;
+        }
+
+        if (encoderThread != null) {
+            try {
+                encoderThread.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            encoderThread = null;
+        }
 
         if (virtualDisplay != null) {
             virtualDisplay.release();
             virtualDisplay = null;
         }
 
-        if (imageReader != null) {
-            imageReader.close();
-            imageReader = null;
+        if (mediaCodec != null) {
+            try {
+                mediaCodec.stop();
+                mediaCodec.release();
+            } catch (Exception e) {
+                Log.e(TAG, "Error releasing MediaCodec", e);
+            }
+            mediaCodec = null;
+        }
+
+        if (inputSurface != null) {
+            inputSurface.release();
+            inputSurface = null;
         }
 
         if (mediaProjection != null) {
@@ -233,12 +288,11 @@ public class ScreenCaptureService extends Service {
             mediaProjection = null;
         }
 
-        Log.d(TAG, "Screen capture stopped");
+        Log.d(TAG, "Screen capture and H.264 encoding stopped");
     }
 
     @Override
     public void onDestroy() {
-
         stopScreenCapture();
 
         Log.d(
