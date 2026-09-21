@@ -20,7 +20,6 @@ import android.os.IBinder;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Surface;
-import com.example.droidlink.network.DeviceDiscovery;
 
 import java.nio.ByteBuffer;
 
@@ -36,7 +35,7 @@ public class ScreenCaptureService extends Service {
     private Thread encoderThread;
     private volatile boolean isEncoding = false;
     private StreamingServer streamingServer;
-    private DeviceDiscovery deviceDiscovery;
+
     private byte[] sps;
     private byte[] pps;
 
@@ -178,7 +177,7 @@ public class ScreenCaptureService extends Service {
                     screenHeight
             );
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 2000000); // 2 Mbps
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 4000000); // 4 Mbps for high quality and smooth motion
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1); // 1 second key frame interval
 
@@ -211,15 +210,8 @@ public class ScreenCaptureService extends Service {
 
         Log.d(TAG, "VirtualDisplay created with H.264 encoder");
 
-        // Start local streaming server
-        streamingServer = new StreamingServer();
-        streamingServer.start();
-        Log.d(TAG, "Local streaming server started at tcp://" + StreamingServer.getLocalIpAddress() + ":8080");
-
-        // Start UDP device discovery broadcast
-        deviceDiscovery = new DeviceDiscovery();
-        deviceDiscovery.start();
-        Log.d(TAG, "Device discovery started");
+        // Get singleton streaming server instance
+        streamingServer = StreamingServer.getInstance();
 
         isEncoding = true;
         encoderThread = new Thread(this::encodeLoop, "H264EncoderThread");
@@ -249,13 +241,6 @@ public class ScreenCaptureService extends Service {
                         byte[] data = new byte[bufferInfo.size];
                         outputBuffer.get(data);
 
-                        /*
-                         * Codec config.
-                         *
-                         * Không broadcast trực tiếp ở đây.
-                         * SPS/PPS sẽ được lấy từ csd-0/csd-1
-                         * trong INFO_OUTPUT_FORMAT_CHANGED.
-                         */
                         if ((bufferInfo.flags
                                 & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
 
@@ -297,9 +282,6 @@ public class ScreenCaptureService extends Service {
                             "Encoder format changed: " + newFormat
                     );
 
-                    /*
-                     * Lấy SPS.
-                     */
                     ByteBuffer csd0 =
                             newFormat.getByteBuffer("csd-0");
 
@@ -317,9 +299,6 @@ public class ScreenCaptureService extends Service {
                         );
                     }
 
-                    /*
-                     * Lấy PPS.
-                     */
                     ByteBuffer csd1 =
                             newFormat.getByteBuffer("csd-1");
 
@@ -337,10 +316,6 @@ public class ScreenCaptureService extends Service {
                         );
                     }
 
-                    /*
-                     * Quan trọng:
-                     * truyền SPS/PPS sang StreamingServer.
-                     */
                     if (
                             streamingServer != null
                                     && sps != null
@@ -377,14 +352,10 @@ public class ScreenCaptureService extends Service {
     private void stopScreenCapture() {
         isEncoding = false;
 
+        // Stop streaming server and close client sockets -> sends EOF to receiver.py -> closes ffplay
         if (streamingServer != null) {
             streamingServer.stop();
             streamingServer = null;
-        }
-
-        if (deviceDiscovery != null) {
-            deviceDiscovery.stop();
-            deviceDiscovery = null;
         }
 
         if (encoderThread != null) {

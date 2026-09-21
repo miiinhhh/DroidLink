@@ -13,7 +13,9 @@ import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.example.droidlink.R;
+import com.example.droidlink.network.DeviceDiscovery;
 import com.example.droidlink.service.ScreenCaptureService;
+import com.example.droidlink.service.StreamingServer;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -22,6 +24,7 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvStatus;
 
     private MediaProjectionManager mediaProjectionManager;
+    private DeviceDiscovery deviceDiscovery;
 
     private final ActivityResultLauncher<Intent> screenCaptureLauncher =
             registerForActivityResult(
@@ -42,7 +45,7 @@ public class MainActivity extends AppCompatActivity {
 
                         } else {
 
-                            tvStatus.setText("● Permission denied");
+                            tvStatus.setText("● Permission denied (Waiting for client...)");
 
                             btnStartMirroring.setEnabled(true);
                             btnStopMirroring.setEnabled(false);
@@ -57,7 +60,6 @@ public class MainActivity extends AppCompatActivity {
 
         btnStartMirroring = findViewById(R.id.btnStartMirroring);
         btnStopMirroring = findViewById(R.id.btnStopMirroring);
-
         tvStatus = findViewById(R.id.tvStatus);
 
         mediaProjectionManager =
@@ -71,10 +73,24 @@ public class MainActivity extends AppCompatActivity {
         btnStopMirroring.setOnClickListener(v ->
                 stopScreenCaptureService()
         );
+
+        // Start discovery and streaming server on app launch (waiting for client connection)
+        tvStatus.setText("● Waiting for client connection...");
+
+        deviceDiscovery = new DeviceDiscovery();
+        deviceDiscovery.start();
+
+        StreamingServer streamingServer = StreamingServer.getInstance();
+        streamingServer.start();
+        streamingServer.setOnClientConnectedListener(() ->
+                runOnUiThread(() -> {
+                    tvStatus.setText("● Client connected, requesting permission...");
+                    requestScreenCapturePermission();
+                })
+        );
     }
 
     private void requestScreenCapturePermission() {
-
         Intent captureIntent =
                 mediaProjectionManager.createScreenCaptureIntent();
 
@@ -82,7 +98,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startScreenCaptureService(Intent permissionData) {
-
         Intent serviceIntent =
                 new Intent(
                         this,
@@ -105,8 +120,8 @@ public class MainActivity extends AppCompatActivity {
             startService(serviceIntent);
         }
     }
-    private void stopScreenCaptureService() {
 
+    private void stopScreenCaptureService() {
         Intent serviceIntent =
                 new Intent(
                         this,
@@ -115,9 +130,28 @@ public class MainActivity extends AppCompatActivity {
 
         stopService(serviceIntent);
 
-        tvStatus.setText("● Disconnected");
+        // Restart streaming server to listen for new client connections
+        StreamingServer streamingServer = StreamingServer.getInstance();
+        streamingServer.start();
+        streamingServer.setOnClientConnectedListener(() ->
+                runOnUiThread(() -> {
+                    tvStatus.setText("● Client connected, requesting permission...");
+                    requestScreenCapturePermission();
+                })
+        );
+
+        tvStatus.setText("● Waiting for client connection...");
 
         btnStartMirroring.setEnabled(true);
         btnStopMirroring.setEnabled(false);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (deviceDiscovery != null) {
+            deviceDiscovery.stop();
+        }
+        StreamingServer.getInstance().stop();
+        super.onDestroy();
     }
 }

@@ -18,6 +18,15 @@ public class StreamingServer {
     private static final String TAG = "DroidLinkServer";
     private static final int PORT = 8080;
 
+    private static StreamingServer instance;
+
+    public static synchronized StreamingServer getInstance() {
+        if (instance == null) {
+            instance = new StreamingServer();
+        }
+        return instance;
+    }
+
     private ServerSocket serverSocket;
     private Thread serverThread;
     private volatile boolean isRunning = false;
@@ -28,6 +37,16 @@ public class StreamingServer {
     private volatile byte[] sps;
     private volatile byte[] pps;
     private volatile byte[] latestIdrFrame;
+
+    public interface OnClientConnectedListener {
+        void onClientConnected();
+    }
+
+    private OnClientConnectedListener clientConnectedListener;
+
+    public void setOnClientConnectedListener(OnClientConnectedListener listener) {
+        this.clientConnectedListener = listener;
+    }
 
     public void start() {
         if (isRunning) return;
@@ -53,6 +72,9 @@ public class StreamingServer {
                     Socket clientSocket =
                             serverSocket.accept();
 
+                    clientSocket.setTcpNoDelay(true);
+                    clientSocket.setSendBufferSize(65536);
+
                     Log.d(
                             TAG,
                             "Client connected: "
@@ -66,6 +88,11 @@ public class StreamingServer {
 
                     // Send SPS + PPS + latest IDR to newly connected client
                     sendInitializationFrames(clientOut);
+
+                    // Notify listener (MainActivity) that a client has connected
+                    if (clientConnectedListener != null) {
+                        clientConnectedListener.onClientConnected();
+                    }
                 }
 
             } catch (IOException e) {
