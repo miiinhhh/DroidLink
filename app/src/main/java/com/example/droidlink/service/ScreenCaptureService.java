@@ -267,12 +267,14 @@ public class ScreenCaptureService extends Service {
 
                         } else {
 
-                            /*
-                             * H.264 frame bình thường.
-                             */
-                            if (streamingServer != null) {
+                            boolean isIdr = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
 
-                                streamingServer.broadcastData(data);
+                            if (streamingServer != null) {
+                                streamingServer.broadcastData(data, isIdr);
+                            }
+
+                            if (isIdr) {
+                                Log.d(TAG, "IDR Key Frame broadcasted, size=" + data.length);
                             }
                         }
                     }

@@ -25,11 +25,9 @@ public class StreamingServer {
     private final List<OutputStream> clients =
             new CopyOnWriteArrayList<>();
 
-    // H.264 codec configuration
-    // SPS = Sequence Parameter Set
-    // PPS = Picture Parameter Set
     private volatile byte[] sps;
     private volatile byte[] pps;
+    private volatile byte[] latestIdrFrame;
 
     public void start() {
         if (isRunning) return;
@@ -66,13 +64,8 @@ public class StreamingServer {
 
                     clients.add(clientOut);
 
-                    /*
-                     * Client mới có thể kết nối sau khi encoder
-                     * đã bắt đầu chạy.
-                     *
-                     * Vì vậy gửi SPS/PPS ngay khi client kết nối.
-                     */
-                    sendCodecConfig(clientOut);
+                    // Send SPS + PPS + latest IDR to newly connected client
+                    sendInitializationFrames(clientOut);
                 }
 
             } catch (IOException e) {
@@ -91,245 +84,122 @@ public class StreamingServer {
         serverThread.start();
     }
 
-    /**
-     * Cập nhật SPS/PPS từ MediaCodec.
-     */
-    public void setCodecConfig(
-            byte[] sps,
-            byte[] pps) {
-
-        this.sps = copyBytes(sps);
-        this.pps = copyBytes(pps);
-
-        Log.d(
-                TAG,
-                "H.264 codec config updated. "
-                        + "SPS="
-                        + (this.sps != null
-                        ? this.sps.length
-                        : 0)
-                        + " bytes, PPS="
-                        + (this.pps != null
-                        ? this.pps.length
-                        : 0)
-                        + " bytes"
-        );
-    }
-
-    /**
-     * Gửi SPS + PPS cho một client.
-     */
-    private void sendCodecConfig(
-            OutputStream out) {
-
-        try {
-
-            if (sps != null) {
-                sendPacket(out, sps);
-            }
-
-            if (pps != null) {
-                sendPacket(out, pps);
-            }
-
-            Log.d(TAG, "SPS/PPS sent to new client");
-
-        } catch (IOException e) {
-
-            clients.remove(out);
-
-            try {
-                out.close();
-            } catch (IOException ignored) {
-            }
-
-            Log.d(
-                    TAG,
-                    "Client disconnected while sending SPS/PPS"
-            );
-        }
-    }
-
-    /**
-     * Broadcast một H.264 packet tới tất cả client.
-     */
-    public void broadcastData(byte[] data) {
-
-        if (!isRunning
-                || data == null
-                || data.length == 0) {
-            return;
-        }
-
-        for (OutputStream out : clients) {
-
-            try {
-
-                sendPacket(out, data);
-
-            } catch (IOException e) {
-
-                clients.remove(out);
-
-                try {
-                    out.close();
-                } catch (IOException ignored) {
-                }
-
-                Log.d(
-                        TAG,
-                        "Client disconnected during broadcast"
-                );
-            }
-        }
-    }
-
-    /**
-     * Gửi packet theo format:
-     *
-     * [4 bytes packet length]
-     * [H.264 data]
-     *
-     * Length sử dụng big-endian.
-     */
-    private void sendPacket(
-            OutputStream out,
-            byte[] data)
-            throws IOException {
-
-        byte[] packet =
-                new byte[4 + data.length];
-
-        packet[0] =
-                (byte) (data.length >> 24);
-
-        packet[1] =
-                (byte) (data.length >> 16);
-
-        packet[2] =
-                (byte) (data.length >> 8);
-
-        packet[3] =
-                (byte) data.length;
-
-        System.arraycopy(
-                data,
-                0,
-                packet,
-                4,
-                data.length
-        );
-
-        out.write(packet);
-        out.flush();
-    }
-
     public void stop() {
-
         isRunning = false;
-
         try {
-
             if (serverSocket != null) {
                 serverSocket.close();
                 serverSocket = null;
             }
-
         } catch (IOException e) {
-
-            Log.e(
-                    TAG,
-                    "Error closing server socket",
-                    e
-            );
+            Log.e(TAG, "Error closing server socket", e);
         }
 
         for (OutputStream out : clients) {
-
             try {
                 out.close();
-            } catch (IOException ignored) {
-            }
+            } catch (IOException ignored) {}
         }
-
         clients.clear();
 
         if (serverThread != null) {
-
             serverThread.interrupt();
             serverThread = null;
         }
 
-        sps = null;
-        pps = null;
-
-        Log.d(
-                TAG,
-                "Local Streaming Server stopped"
-        );
+        Log.d(TAG, "Local Streaming Server stopped");
     }
 
-    private static byte[] copyBytes(byte[] data) {
+    public void setCodecConfig(byte[] sps, byte[] pps) {
+        this.sps = copyBytes(sps);
+        this.pps = copyBytes(pps);
+        Log.d(TAG, "Codec config updated: SPS=" + (this.sps != null ? this.sps.length : 0) + ", PPS=" + (this.pps != null ? this.pps.length : 0));
+    }
 
-        if (data == null) {
-            return null;
+    public void broadcastData(byte[] data, boolean isIdr) {
+        if (!isRunning || data == null || data.length == 0) return;
+
+        if (isIdr) {
+            this.latestIdrFrame = copyBytes(data);
+            Log.d(TAG, "Latest IDR frame updated, size=" + data.length);
         }
 
-        byte[] copy =
-                new byte[data.length];
+        byte[] packet = buildPacket(data);
 
-        System.arraycopy(
-                data,
-                0,
-                copy,
-                0,
-                data.length
-        );
+        for (OutputStream out : clients) {
+            try {
+                out.write(packet);
+                out.flush();
+            } catch (IOException e) {
+                clients.remove(out);
+                try {
+                    out.close();
+                } catch (IOException ignored) {}
+                Log.d(TAG, "Client disconnected during broadcast");
+            }
+        }
+    }
 
-        return copy;
+    private void sendInitializationFrames(OutputStream out) {
+        try {
+            if (sps != null) {
+                sendPacket(out, sps);
+            }
+            if (pps != null) {
+                sendPacket(out, pps);
+            }
+            if (latestIdrFrame != null) {
+                sendPacket(out, latestIdrFrame);
+                Log.d(TAG, "Sent SPS + PPS + latest IDR to new client");
+            } else {
+                Log.d(TAG, "Sent SPS + PPS to new client (IDR not available yet)");
+            }
+        } catch (IOException e) {
+            clients.remove(out);
+            try {
+                out.close();
+            } catch (IOException ignored) {}
+            Log.d(TAG, "Client disconnected while sending initialization frames");
+        }
+    }
+
+    private void sendPacket(OutputStream out, byte[] data) throws IOException {
+        byte[] packet = buildPacket(data);
+        out.write(packet);
+        out.flush();
+    }
+
+    private byte[] buildPacket(byte[] data) {
+        byte[] packet = new byte[4 + data.length];
+        packet[0] = (byte) (data.length >> 24);
+        packet[1] = (byte) (data.length >> 16);
+        packet[2] = (byte) (data.length >> 8);
+        packet[3] = (byte) data.length;
+        System.arraycopy(data, 0, packet, 4, data.length);
+        return packet;
+    }
+
+    private byte[] copyBytes(byte[] src) {
+        if (src == null) return null;
+        byte[] dest = new byte[src.length];
+        System.arraycopy(src, 0, dest, 0, src.length);
+        return dest;
     }
 
     public static String getLocalIpAddress() {
-
         try {
-
-            for (
-                    Enumeration<NetworkInterface> en =
-                    NetworkInterface.getNetworkInterfaces();
-                    en.hasMoreElements();
-            ) {
-
-                NetworkInterface intf =
-                        en.nextElement();
-
-                for (
-                        Enumeration<InetAddress> enumIpAddr =
-                        intf.getInetAddresses();
-                        enumIpAddr.hasMoreElements();
-                ) {
-
-                    InetAddress inetAddress =
-                            enumIpAddr.nextElement();
-
-                    if (
-                            !inetAddress.isLoopbackAddress()
-                                    && inetAddress instanceof Inet4Address
-                    ) {
-
+            for (Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces(); en.hasMoreElements();) {
+                NetworkInterface intf = en.nextElement();
+                for (Enumeration<InetAddress> enumIpAddr = intf.getInetAddresses(); enumIpAddr.hasMoreElements();) {
+                    InetAddress inetAddress = enumIpAddr.nextElement();
+                    if (!inetAddress.isLoopbackAddress() && inetAddress instanceof Inet4Address) {
                         return inetAddress.getHostAddress();
                     }
                 }
             }
-
         } catch (Exception ex) {
-
-            Log.e(
-                    TAG,
-                    "Failed to get local IP",
-                    ex
-            );
+            Log.e(TAG, "Failed to get local IP", ex);
         }
-
         return "127.0.0.1";
     }
 }
