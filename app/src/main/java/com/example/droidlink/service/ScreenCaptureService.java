@@ -20,6 +20,7 @@ import android.os.IBinder;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Surface;
+import com.example.droidlink.network.DeviceDiscovery;
 
 import java.nio.ByteBuffer;
 
@@ -35,6 +36,7 @@ public class ScreenCaptureService extends Service {
     private Thread encoderThread;
     private volatile boolean isEncoding = false;
     private StreamingServer streamingServer;
+    private DeviceDiscovery deviceDiscovery;
     private byte[] sps;
     private byte[] pps;
 
@@ -214,6 +216,11 @@ public class ScreenCaptureService extends Service {
         streamingServer.start();
         Log.d(TAG, "Local streaming server started at tcp://" + StreamingServer.getLocalIpAddress() + ":8080");
 
+        // Start UDP device discovery broadcast
+        deviceDiscovery = new DeviceDiscovery();
+        deviceDiscovery.start();
+        Log.d(TAG, "Device discovery started");
+
         isEncoding = true;
         encoderThread = new Thread(this::encodeLoop, "H264EncoderThread");
         encoderThread.start();
@@ -371,6 +378,11 @@ public class ScreenCaptureService extends Service {
         if (streamingServer != null) {
             streamingServer.stop();
             streamingServer = null;
+        }
+
+        if (deviceDiscovery != null) {
+            deviceDiscovery.stop();
+            deviceDiscovery = null;
         }
 
         if (encoderThread != null) {
