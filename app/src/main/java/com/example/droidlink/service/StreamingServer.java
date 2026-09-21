@@ -48,8 +48,12 @@ public class StreamingServer {
         this.clientConnectedListener = listener;
     }
 
-    public void start() {
-        if (isRunning) return;
+    public synchronized void start() {
+        if (isRunning && serverSocket != null && !serverSocket.isClosed()) {
+            return;
+        }
+
+        stop(); // Ensure clean state
 
         isRunning = true;
 
@@ -57,6 +61,7 @@ public class StreamingServer {
 
             try {
                 serverSocket = new ServerSocket(PORT);
+                serverSocket.setReuseAddress(true);
 
                 Log.d(
                         TAG,
@@ -68,30 +73,34 @@ public class StreamingServer {
                 );
 
                 while (isRunning) {
+                    try {
+                        Socket clientSocket = serverSocket.accept();
 
-                    Socket clientSocket =
-                            serverSocket.accept();
+                        clientSocket.setTcpNoDelay(true);
+                        clientSocket.setSendBufferSize(65536);
 
-                    clientSocket.setTcpNoDelay(true);
-                    clientSocket.setSendBufferSize(65536);
+                        Log.d(
+                                TAG,
+                                "Client connected: "
+                                        + clientSocket.getRemoteSocketAddress()
+                        );
 
-                    Log.d(
-                            TAG,
-                            "Client connected: "
-                                    + clientSocket.getRemoteSocketAddress()
-                    );
+                        OutputStream clientOut =
+                                clientSocket.getOutputStream();
 
-                    OutputStream clientOut =
-                            clientSocket.getOutputStream();
+                        clients.add(clientOut);
 
-                    clients.add(clientOut);
+                        // Send SPS + PPS + latest IDR to newly connected client
+                        sendInitializationFrames(clientOut);
 
-                    // Send SPS + PPS + latest IDR to newly connected client
-                    sendInitializationFrames(clientOut);
-
-                    // Notify listener (MainActivity) that a client has connected
-                    if (clientConnectedListener != null) {
-                        clientConnectedListener.onClientConnected();
+                        // Notify listener (MainActivity) that a client has connected
+                        if (clientConnectedListener != null) {
+                            clientConnectedListener.onClientConnected();
+                        }
+                    } catch (IOException e) {
+                        if (isRunning) {
+                            Log.e(TAG, "Error accepting client connection", e);
+                        }
                     }
                 }
 
@@ -100,7 +109,7 @@ public class StreamingServer {
                 if (isRunning) {
                     Log.e(
                             TAG,
-                            "Streaming server error",
+                            "Streaming server socket error",
                             e
                     );
                 }
@@ -111,7 +120,7 @@ public class StreamingServer {
         serverThread.start();
     }
 
-    public void stop() {
+    public synchronized void stop() {
         isRunning = false;
         try {
             if (serverSocket != null) {
@@ -151,12 +160,17 @@ public class StreamingServer {
             Log.d(TAG, "Latest IDR frame updated, size=" + data.length);
         }
 
-        byte[] packet = buildPacket(data);
-
         for (OutputStream out : clients) {
             try {
-                out.write(packet);
-                out.flush();
+                if (isIdr) {
+                    if (sps != null) {
+                        sendPacket(out, sps);
+                    }
+                    if (pps != null) {
+                        sendPacket(out, pps);
+                    }
+                }
+                sendPacket(out, data);
             } catch (IOException e) {
                 clients.remove(out);
                 try {

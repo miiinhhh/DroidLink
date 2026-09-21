@@ -358,6 +358,9 @@ public class ScreenCaptureService extends Service {
             streamingServer = null;
         }
 
+        // Restart streaming server so it's ready to listen for new client connections
+        StreamingServer.getInstance().start();
+
         if (encoderThread != null) {
             try {
                 encoderThread.join(1000);
