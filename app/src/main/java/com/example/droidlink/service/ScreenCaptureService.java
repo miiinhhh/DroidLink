@@ -15,6 +15,7 @@ import android.media.MediaFormat;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.IBinder;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -34,6 +35,8 @@ public class ScreenCaptureService extends Service {
     private Thread encoderThread;
     private volatile boolean isEncoding = false;
     private StreamingServer streamingServer;
+    private byte[] sps;
+    private byte[] pps;
 
     private int screenWidth;
     private int screenHeight;
@@ -181,6 +184,11 @@ public class ScreenCaptureService extends Service {
             mediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             inputSurface = mediaCodec.createInputSurface();
             mediaCodec.start();
+
+            // Request immediate sync frame (IDR) to output frames right away
+            Bundle params = new Bundle();
+            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+            mediaCodec.setParameters(params);
         } catch (Exception e) {
             Log.e(TAG, "Failed to initialize H.264 MediaCodec encoder", e);
             stopSelf();
@@ -213,34 +221,145 @@ public class ScreenCaptureService extends Service {
 
     private void encodeLoop() {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+
         while (isEncoding) {
             try {
-                int outputBufferId = mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
+                int outputBufferId =
+                        mediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
+
                 if (outputBufferId >= 0) {
-                    ByteBuffer outputBuffer = mediaCodec.getOutputBuffer(outputBufferId);
+
+                    ByteBuffer outputBuffer =
+                            mediaCodec.getOutputBuffer(outputBufferId);
+
                     if (outputBuffer != null && bufferInfo.size > 0) {
-                        if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
-                            outputBuffer.position(bufferInfo.offset);
-                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
 
-                            byte[] h264Data = new byte[bufferInfo.size];
-                            outputBuffer.get(h264Data);
+                        outputBuffer.position(bufferInfo.offset);
+                        outputBuffer.limit(
+                                bufferInfo.offset + bufferInfo.size
+                        );
 
-                            // Broadcast encoded H.264 NAL packet to connected clients
+                        byte[] data = new byte[bufferInfo.size];
+                        outputBuffer.get(data);
+
+                        /*
+                         * Codec config.
+                         *
+                         * Không broadcast trực tiếp ở đây.
+                         * SPS/PPS sẽ được lấy từ csd-0/csd-1
+                         * trong INFO_OUTPUT_FORMAT_CHANGED.
+                         */
+                        if ((bufferInfo.flags
+                                & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+
+                            Log.d(
+                                    TAG,
+                                    "H.264 codec config received, size="
+                                            + data.length
+                            );
+
+                        } else {
+
+                            /*
+                             * H.264 frame bình thường.
+                             */
                             if (streamingServer != null) {
-                                streamingServer.broadcastData(h264Data);
+
+                                streamingServer.broadcastData(data);
                             }
                         }
                     }
-                    mediaCodec.releaseOutputBuffer(outputBufferId, false);
-                } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    MediaFormat newFormat = mediaCodec.getOutputFormat();
-                    Log.d(TAG, "Encoder format changed: " + newFormat);
+
+                    mediaCodec.releaseOutputBuffer(
+                            outputBufferId,
+                            false
+                    );
+
+                } else if (
+                        outputBufferId
+                                == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
+                ) {
+
+                    MediaFormat newFormat =
+                            mediaCodec.getOutputFormat();
+
+                    Log.d(
+                            TAG,
+                            "Encoder format changed: " + newFormat
+                    );
+
+                    /*
+                     * Lấy SPS.
+                     */
+                    ByteBuffer csd0 =
+                            newFormat.getByteBuffer("csd-0");
+
+                    if (csd0 != null) {
+
+                        ByteBuffer spsBuffer =
+                                csd0.duplicate();
+
+                        sps = new byte[spsBuffer.remaining()];
+                        spsBuffer.get(sps);
+
+                        Log.d(
+                                TAG,
+                                "SPS stored, size=" + sps.length
+                        );
+                    }
+
+                    /*
+                     * Lấy PPS.
+                     */
+                    ByteBuffer csd1 =
+                            newFormat.getByteBuffer("csd-1");
+
+                    if (csd1 != null) {
+
+                        ByteBuffer ppsBuffer =
+                                csd1.duplicate();
+
+                        pps = new byte[ppsBuffer.remaining()];
+                        ppsBuffer.get(pps);
+
+                        Log.d(
+                                TAG,
+                                "PPS stored, size=" + pps.length
+                        );
+                    }
+
+                    /*
+                     * Quan trọng:
+                     * truyền SPS/PPS sang StreamingServer.
+                     */
+                    if (
+                            streamingServer != null
+                                    && sps != null
+                                    && pps != null
+                    ) {
+
+                        streamingServer.setCodecConfig(
+                                sps,
+                                pps
+                        );
+
+                        Log.d(
+                                TAG,
+                                "SPS/PPS sent to StreamingServer"
+                        );
+                    }
                 }
+
             } catch (Exception e) {
+
                 if (isEncoding) {
-                    Log.e(TAG, "Error in H.264 encoding loop", e);
+                    Log.e(
+                            TAG,
+                            "Error in H.264 encoding loop",
+                            e
+                    );
                 }
+
                 break;
             }
         }
