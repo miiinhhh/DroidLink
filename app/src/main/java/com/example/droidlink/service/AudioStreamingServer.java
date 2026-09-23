@@ -94,15 +94,26 @@ public class AudioStreamingServer {
         Log.d(TAG, "Audio Streaming Server stopped");
     }
 
-    public void broadcastData(byte[] data) {
+    public void broadcastData(byte[] data, long timestampMs) {
         if (!isRunning || data == null || data.length == 0) return;
 
-        byte[] packet = new byte[4 + data.length];
+        // 4 bytes length + 8 bytes timestamp (long) + data payload
+        byte[] packet = new byte[12 + data.length];
         packet[0] = (byte) (data.length >> 24);
         packet[1] = (byte) (data.length >> 16);
         packet[2] = (byte) (data.length >> 8);
         packet[3] = (byte) data.length;
-        System.arraycopy(data, 0, packet, 4, data.length);
+
+        packet[4] = (byte) (timestampMs >> 56);
+        packet[5] = (byte) (timestampMs >> 48);
+        packet[6] = (byte) (timestampMs >> 40);
+        packet[7] = (byte) (timestampMs >> 32);
+        packet[8] = (byte) (timestampMs >> 24);
+        packet[9] = (byte) (timestampMs >> 16);
+        packet[10] = (byte) (timestampMs >> 8);
+        packet[11] = (byte) timestampMs;
+
+        System.arraycopy(data, 0, packet, 12, data.length);
 
         for (OutputStream out : clients) {
             try {

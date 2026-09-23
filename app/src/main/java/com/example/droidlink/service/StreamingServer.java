@@ -161,7 +161,7 @@ public class StreamingServer {
         Log.d(TAG, "Codec config updated: SPS=" + (this.sps != null ? this.sps.length : 0) + ", PPS=" + (this.pps != null ? this.pps.length : 0));
     }
 
-    public void broadcastData(byte[] data, boolean isIdr) {
+    public void broadcastData(byte[] data, boolean isIdr, long timestampMs) {
         if (!isRunning || data == null || data.length == 0) return;
 
         if (isIdr) {
@@ -169,17 +169,20 @@ public class StreamingServer {
             Log.d(TAG, "Latest IDR frame updated, size=" + data.length);
         }
 
+        byte[] packet = buildPacket(data, timestampMs);
+
         for (OutputStream out : clients) {
             try {
                 if (isIdr) {
                     if (sps != null) {
-                        sendPacket(out, sps);
+                        sendPacket(out, sps, timestampMs);
                     }
                     if (pps != null) {
-                        sendPacket(out, pps);
+                        sendPacket(out, pps, timestampMs);
                     }
                 }
-                sendPacket(out, data);
+                out.write(packet);
+                out.flush();
             } catch (IOException e) {
                 clients.remove(out);
                 try {
@@ -196,14 +199,15 @@ public class StreamingServer {
 
     private void sendInitializationFrames(OutputStream out) {
         try {
+            long initTimestamp = 0;
             if (sps != null) {
-                sendPacket(out, sps);
+                sendPacket(out, sps, initTimestamp);
             }
             if (pps != null) {
-                sendPacket(out, pps);
+                sendPacket(out, pps, initTimestamp);
             }
             if (latestIdrFrame != null) {
-                sendPacket(out, latestIdrFrame);
+                sendPacket(out, latestIdrFrame, initTimestamp);
                 Log.d(TAG, "Sent SPS + PPS + latest IDR to new client");
             } else {
                 Log.d(TAG, "Sent SPS + PPS to new client (IDR not available yet)");
@@ -221,19 +225,30 @@ public class StreamingServer {
         }
     }
 
-    private void sendPacket(OutputStream out, byte[] data) throws IOException {
-        byte[] packet = buildPacket(data);
+    private void sendPacket(OutputStream out, byte[] data, long timestampMs) throws IOException {
+        byte[] packet = buildPacket(data, timestampMs);
         out.write(packet);
         out.flush();
     }
 
-    private byte[] buildPacket(byte[] data) {
-        byte[] packet = new byte[4 + data.length];
+    private byte[] buildPacket(byte[] data, long timestampMs) {
+        // 4 bytes length + 8 bytes timestamp (long) + data payload
+        byte[] packet = new byte[12 + data.length];
         packet[0] = (byte) (data.length >> 24);
         packet[1] = (byte) (data.length >> 16);
         packet[2] = (byte) (data.length >> 8);
         packet[3] = (byte) data.length;
-        System.arraycopy(data, 0, packet, 4, data.length);
+
+        packet[4] = (byte) (timestampMs >> 56);
+        packet[5] = (byte) (timestampMs >> 48);
+        packet[6] = (byte) (timestampMs >> 40);
+        packet[7] = (byte) (timestampMs >> 32);
+        packet[8] = (byte) (timestampMs >> 24);
+        packet[9] = (byte) (timestampMs >> 16);
+        packet[10] = (byte) (timestampMs >> 8);
+        packet[11] = (byte) timestampMs;
+
+        System.arraycopy(data, 0, packet, 12, data.length);
         return packet;
     }
 

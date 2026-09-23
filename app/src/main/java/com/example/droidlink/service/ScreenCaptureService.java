@@ -51,6 +51,8 @@ public class ScreenCaptureService extends Service {
     private byte[] sps;
     private byte[] pps;
 
+    private long streamStartTimeMs = 0;
+
     private int screenWidth;
     private int screenHeight;
     private int screenDensity;
@@ -183,6 +185,8 @@ public class ScreenCaptureService extends Service {
                         + screenHeight
         );
 
+        streamStartTimeMs = System.currentTimeMillis();
+
         try {
             MediaFormat format = MediaFormat.createVideoFormat(
                     MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -234,18 +238,14 @@ public class ScreenCaptureService extends Service {
         encoderThread = new Thread(this::encodeLoop, "H264EncoderThread");
         encoderThread.start();
 
-        // Audio Streaming Server
+        // Step 1: Start Audio Capture and AAC Encoding (Android 10+ / API 29+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-
-            audioStreamingServer = AudioStreamingServer.getInstance();
-            audioStreamingServer.start();
-
             try {
-                AudioPlaybackCaptureConfiguration config =
-                        new AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
-                                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
-                                .addMatchingUsage(AudioAttributes.USAGE_GAME)
-                                .build();
+                AudioPlaybackCaptureConfiguration config = new AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                        .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                        .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                        .addMatchingUsage(AudioAttributes.USAGE_UNKNOWN)
+                        .build();
 
                 AudioFormat audioFormat = new AudioFormat.Builder()
                         .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
@@ -253,11 +253,7 @@ public class ScreenCaptureService extends Service {
                         .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
                         .build();
 
-                int minBufferSize = AudioRecord.getMinBufferSize(
-                        44100,
-                        AudioFormat.CHANNEL_IN_STEREO,
-                        AudioFormat.ENCODING_PCM_16BIT
-                );
+                int minBufferSize = AudioRecord.getMinBufferSize(44100, AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT);
 
                 audioRecord = new AudioRecord.Builder()
                         .setAudioFormat(audioFormat)
@@ -265,75 +261,24 @@ public class ScreenCaptureService extends Service {
                         .setAudioPlaybackCaptureConfig(config)
                         .build();
 
-                MediaFormat audioFormatEnc =
-                        MediaFormat.createAudioFormat(
-                                MediaFormat.MIMETYPE_AUDIO_AAC,
-                                44100,
-                                2
-                        );
+                MediaFormat audioFormatEnc = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, 2);
+                audioFormatEnc.setInteger(MediaFormat.KEY_BIT_RATE, 96000); // 96 kbps
+                audioFormatEnc.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
+                audioFormatEnc.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384);
 
-                audioFormatEnc.setInteger(
-                        MediaFormat.KEY_BIT_RATE,
-                        96000
-                );
-
-                audioFormatEnc.setInteger(
-                        MediaFormat.KEY_AAC_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AACObjectLC
-                );
-
-                audioFormatEnc.setInteger(
-                        MediaFormat.KEY_MAX_INPUT_SIZE,
-                        16384
-                );
-
-                audioEncoder =
-                        MediaCodec.createEncoderByType(
-                                MediaFormat.MIMETYPE_AUDIO_AAC
-                        );
-
-                audioEncoder.configure(
-                        audioFormatEnc,
-                        null,
-                        null,
-                        MediaCodec.CONFIGURE_FLAG_ENCODE
-                );
-
+                audioEncoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC);
+                audioEncoder.configure(audioFormatEnc, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
                 audioEncoder.start();
 
+                audioStreamingServer = AudioStreamingServer.getInstance();
+                audioStreamingServer.start();
+
                 isAudioEncoding = true;
-
-                audioThread = new Thread(
-                        this::audioCaptureLoop,
-                        "AudioEncoderThread"
-                );
-
+                audioThread = new Thread(this::audioCaptureLoop, "AudioEncoderThread");
                 audioThread.start();
-
                 Log.d(TAG, "Audio capture and AAC encoding started");
-
             } catch (Exception e) {
                 Log.e(TAG, "Failed to start audio capture/encoding", e);
-
-                isAudioEncoding = false;
-
-                if (audioEncoder != null) {
-                    try {
-                        audioEncoder.stop();
-                        audioEncoder.release();
-                    } catch (Exception ignored) {}
-
-                    audioEncoder = null;
-                }
-
-                if (audioRecord != null) {
-                    try {
-                        audioRecord.stop();
-                        audioRecord.release();
-                    } catch (Exception ignored) {}
-
-                    audioRecord = null;
-                }
             }
         }
     }
@@ -374,12 +319,16 @@ public class ScreenCaptureService extends Service {
 
                             boolean isIdr = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
 
+                            long timestampMs = bufferInfo.presentationTimeUs > 0
+                                    ? (bufferInfo.presentationTimeUs / 1000)
+                                    : (System.currentTimeMillis() - streamStartTimeMs);
+
                             if (streamingServer != null) {
-                                streamingServer.broadcastData(data, isIdr);
+                                streamingServer.broadcastData(data, isIdr, timestampMs);
                             }
 
                             if (isIdr) {
-                                Log.d(TAG, "IDR Key Frame broadcasted, size=" + data.length);
+                                Log.d(TAG, "IDR Key Frame broadcasted, size=" + data.length + ", ts=" + timestampMs);
                             }
                         }
                     }
@@ -509,8 +458,12 @@ public class ScreenCaptureService extends Service {
 
                         byte[] adtsPacket = addAdtsPacket(rawAac, rawAac.length);
 
+                        long timestampMs = bufferInfo.presentationTimeUs > 0
+                                ? (bufferInfo.presentationTimeUs / 1000)
+                                : (System.currentTimeMillis() - streamStartTimeMs);
+
                         if (audioStreamingServer != null) {
-                            audioStreamingServer.broadcastData(adtsPacket);
+                            audioStreamingServer.broadcastData(adtsPacket, timestampMs);
                         }
                     }
                     audioEncoder.releaseOutputBuffer(outputBufferId, false);
