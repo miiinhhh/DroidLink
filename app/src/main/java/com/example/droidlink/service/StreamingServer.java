@@ -42,10 +42,19 @@ public class StreamingServer {
         void onClientConnected();
     }
 
+    public interface OnAllClientsDisconnectedListener {
+        void onAllClientsDisconnected();
+    }
+
     private OnClientConnectedListener clientConnectedListener;
+    private OnAllClientsDisconnectedListener allClientsDisconnectedListener;
 
     public void setOnClientConnectedListener(OnClientConnectedListener listener) {
         this.clientConnectedListener = listener;
+    }
+
+    public void setOnAllClientsDisconnectedListener(OnAllClientsDisconnectedListener listener) {
+        this.allClientsDisconnectedListener = listener;
     }
 
     public synchronized void start() {
@@ -177,6 +186,10 @@ public class StreamingServer {
                     out.close();
                 } catch (IOException ignored) {}
                 Log.d(TAG, "Client disconnected during broadcast");
+
+                if (clients.isEmpty() && allClientsDisconnectedListener != null) {
+                    allClientsDisconnectedListener.onAllClientsDisconnected();
+                }
             }
         }
     }
@@ -201,6 +214,10 @@ public class StreamingServer {
                 out.close();
             } catch (IOException ignored) {}
             Log.d(TAG, "Client disconnected while sending initialization frames");
+
+            if (clients.isEmpty() && allClientsDisconnectedListener != null) {
+                allClientsDisconnectedListener.onAllClientsDisconnected();
+            }
         }
     }
 

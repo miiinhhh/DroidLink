@@ -146,6 +146,34 @@ public class MainActivity extends AppCompatActivity {
         btnStopMirroring.setEnabled(false);
     }
 
+    private final android.content.BroadcastReceiver stopUiReceiver = new android.content.BroadcastReceiver() {
+        @Override
+        public void onReceive(android.content.Context context, android.content.Intent intent) {
+            tvStatus.setText("● Waiting for client connection...");
+            btnStartMirroring.setEnabled(true);
+            btnStopMirroring.setEnabled(false);
+        }
+    };
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        android.content.IntentFilter filter = new android.content.IntentFilter("com.example.droidlink.ACTION_STOP_UI");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(stopUiReceiver, filter, RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(stopUiReceiver, filter);
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        try {
+            unregisterReceiver(stopUiReceiver);
+        } catch (Exception ignored) {}
+    }
+
     @Override
     protected void onDestroy() {
         if (deviceDiscovery != null) {

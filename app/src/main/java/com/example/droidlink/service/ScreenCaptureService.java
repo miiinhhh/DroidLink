@@ -212,6 +212,10 @@ public class ScreenCaptureService extends Service {
 
         // Get singleton streaming server instance
         streamingServer = StreamingServer.getInstance();
+        streamingServer.setOnAllClientsDisconnectedListener(() -> {
+            Log.d(TAG, "All clients disconnected, stopping screen capture");
+            stopSelf();
+        });
 
         isEncoding = true;
         encoderThread = new Thread(this::encodeLoop, "H264EncoderThread");
@@ -351,6 +355,11 @@ public class ScreenCaptureService extends Service {
 
     private void stopScreenCapture() {
         isEncoding = false;
+
+        // Broadcast to update UI in MainActivity
+        Intent intent = new Intent("com.example.droidlink.ACTION_STOP_UI");
+        intent.setPackage(getPackageName());
+        sendBroadcast(intent);
 
         // Stop streaming server and close client sockets -> sends EOF to receiver.py -> closes ffplay
         if (streamingServer != null) {
