@@ -67,7 +67,7 @@ public class MainActivity extends AppCompatActivity {
                         getSystemService(MEDIA_PROJECTION_SERVICE);
 
         btnStartMirroring.setOnClickListener(v ->
-                requestScreenCapturePermission()
+                checkAudioPermissionAndRequest()
         );
 
         btnStopMirroring.setOnClickListener(v ->
@@ -85,9 +85,27 @@ public class MainActivity extends AppCompatActivity {
         streamingServer.setOnClientConnectedListener(() ->
                 runOnUiThread(() -> {
                     tvStatus.setText("● Client connected, requesting permission...");
-                    requestScreenCapturePermission();
+                    checkAudioPermissionAndRequest();
                 })
         );
+    }
+
+    private final ActivityResultLauncher<String> audioPermissionLauncher =
+            registerForActivityResult(
+                    new ActivityResultContracts.RequestPermission(),
+                    isGranted -> {
+                        requestScreenCapturePermission();
+                    }
+            );
+
+    private void checkAudioPermissionAndRequest() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO);
+                return;
+            }
+        }
+        requestScreenCapturePermission();
     }
 
     private void requestScreenCapturePermission() {

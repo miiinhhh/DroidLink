@@ -1,5 +1,6 @@
 package com.example.droidlink.service;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -9,6 +10,10 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioPlaybackCaptureConfiguration;
+import android.media.AudioRecord;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -36,6 +41,13 @@ public class ScreenCaptureService extends Service {
     private volatile boolean isEncoding = false;
     private StreamingServer streamingServer;
 
+    // Audio capture and encoding fields
+    private AudioRecord audioRecord;
+    private MediaCodec audioEncoder;
+    private Thread audioThread;
+    private volatile boolean isAudioEncoding = false;
+    private AudioStreamingServer audioStreamingServer;
+
     private byte[] sps;
     private byte[] pps;
 
@@ -62,7 +74,7 @@ public class ScreenCaptureService extends Service {
         Notification notification =
                 notificationBuilder
                         .setContentTitle("DroidLink")
-                        .setContentText("Screen mirroring is active")
+                        .setContentText("Screen mirroring & audio is active")
                         .setSmallIcon(android.R.drawable.ic_menu_view)
                         .build();
 
@@ -113,6 +125,7 @@ public class ScreenCaptureService extends Service {
         return START_NOT_STICKY;
     }
 
+    @SuppressLint("MissingPermission")
     private void startScreenCapture(
             int resultCode,
             Intent data) {
@@ -220,6 +233,109 @@ public class ScreenCaptureService extends Service {
         isEncoding = true;
         encoderThread = new Thread(this::encodeLoop, "H264EncoderThread");
         encoderThread.start();
+
+        // Audio Streaming Server
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+
+            audioStreamingServer = AudioStreamingServer.getInstance();
+            audioStreamingServer.start();
+
+            try {
+                AudioPlaybackCaptureConfiguration config =
+                        new AudioPlaybackCaptureConfiguration.Builder(mediaProjection)
+                                .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+                                .addMatchingUsage(AudioAttributes.USAGE_GAME)
+                                .build();
+
+                AudioFormat audioFormat = new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(44100)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+                        .build();
+
+                int minBufferSize = AudioRecord.getMinBufferSize(
+                        44100,
+                        AudioFormat.CHANNEL_IN_STEREO,
+                        AudioFormat.ENCODING_PCM_16BIT
+                );
+
+                audioRecord = new AudioRecord.Builder()
+                        .setAudioFormat(audioFormat)
+                        .setBufferSizeInBytes(Math.max(minBufferSize, 4096 * 2))
+                        .setAudioPlaybackCaptureConfig(config)
+                        .build();
+
+                MediaFormat audioFormatEnc =
+                        MediaFormat.createAudioFormat(
+                                MediaFormat.MIMETYPE_AUDIO_AAC,
+                                44100,
+                                2
+                        );
+
+                audioFormatEnc.setInteger(
+                        MediaFormat.KEY_BIT_RATE,
+                        96000
+                );
+
+                audioFormatEnc.setInteger(
+                        MediaFormat.KEY_AAC_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AACObjectLC
+                );
+
+                audioFormatEnc.setInteger(
+                        MediaFormat.KEY_MAX_INPUT_SIZE,
+                        16384
+                );
+
+                audioEncoder =
+                        MediaCodec.createEncoderByType(
+                                MediaFormat.MIMETYPE_AUDIO_AAC
+                        );
+
+                audioEncoder.configure(
+                        audioFormatEnc,
+                        null,
+                        null,
+                        MediaCodec.CONFIGURE_FLAG_ENCODE
+                );
+
+                audioEncoder.start();
+
+                isAudioEncoding = true;
+
+                audioThread = new Thread(
+                        this::audioCaptureLoop,
+                        "AudioEncoderThread"
+                );
+
+                audioThread.start();
+
+                Log.d(TAG, "Audio capture and AAC encoding started");
+
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to start audio capture/encoding", e);
+
+                isAudioEncoding = false;
+
+                if (audioEncoder != null) {
+                    try {
+                        audioEncoder.stop();
+                        audioEncoder.release();
+                    } catch (Exception ignored) {}
+
+                    audioEncoder = null;
+                }
+
+                if (audioRecord != null) {
+                    try {
+                        audioRecord.stop();
+                        audioRecord.release();
+                    } catch (Exception ignored) {}
+
+                    audioRecord = null;
+                }
+            }
+        }
     }
 
     private void encodeLoop() {
@@ -353,8 +469,85 @@ public class ScreenCaptureService extends Service {
         }
     }
 
+    private void audioCaptureLoop() {
+        if (audioRecord == null || audioEncoder == null) return;
+
+        try {
+            audioRecord.startRecording();
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start AudioRecord", e);
+            return;
+        }
+
+        byte[] buffer = new byte[4096];
+        MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+
+        while (isAudioEncoding) {
+            try {
+                int readBytes = audioRecord.read(buffer, 0, buffer.length);
+                if (readBytes > 0) {
+                    int inputBufferId = audioEncoder.dequeueInputBuffer(10000);
+                    if (inputBufferId >= 0) {
+                        ByteBuffer inputBuffer = audioEncoder.getInputBuffer(inputBufferId);
+                        if (inputBuffer != null) {
+                            inputBuffer.clear();
+                            inputBuffer.put(buffer, 0, readBytes);
+                            audioEncoder.queueInputBuffer(inputBufferId, 0, readBytes, System.nanoTime() / 1000, 0);
+                        }
+                    }
+                }
+
+                int outputBufferId = audioEncoder.dequeueOutputBuffer(bufferInfo, 0);
+                while (outputBufferId >= 0) {
+                    ByteBuffer outputBuffer = audioEncoder.getOutputBuffer(outputBufferId);
+                    if (outputBuffer != null && bufferInfo.size > 0) {
+                        outputBuffer.position(bufferInfo.offset);
+                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
+
+                        byte[] rawAac = new byte[bufferInfo.size];
+                        outputBuffer.get(rawAac);
+
+                        byte[] adtsPacket = addAdtsPacket(rawAac, rawAac.length);
+
+                        if (audioStreamingServer != null) {
+                            audioStreamingServer.broadcastData(adtsPacket);
+                        }
+                    }
+                    audioEncoder.releaseOutputBuffer(outputBufferId, false);
+                    outputBufferId = audioEncoder.dequeueOutputBuffer(bufferInfo, 0);
+                }
+            } catch (Exception e) {
+                if (isAudioEncoding) {
+                    Log.e(TAG, "Error in audio capture/encoding loop", e);
+                }
+                break;
+            }
+        }
+    }
+
+    private byte[] addAdtsPacket(byte[] rawAac, int rawLen) {
+        int packetLen = rawLen + 7;
+        byte[] packet = new byte[packetLen];
+
+        int profile = 2; // AAC-LC
+        int freqIdx = 4; // 44100Hz
+        int chanCfg = 2; // Stereo
+
+        packet[0] = (byte) 0xFF;
+        packet[1] = (byte) 0xF1; // MPEG-4, layer 0, no CRC
+        packet[2] = (byte) (((profile - 1) << 6) + (freqIdx << 2) + (chanCfg >> 2));
+        packet[3] = (byte) (((chanCfg & 3) << 6) + (packetLen >> 11));
+        packet[4] = (byte) ((packetLen & 0x7FF) >> 3);
+        packet[5] = (byte) (((packetLen & 7) << 5) + 0x1F);
+        packet[6] = (byte) 0xFC;
+
+        System.arraycopy(rawAac, 0, packet, 7, rawLen);
+        return packet;
+    }
+
     private void stopScreenCapture() {
         isEncoding = false;
+        isAudioEncoding = false;
 
         // Broadcast to update UI in MainActivity
         Intent intent = new Intent("com.example.droidlink.ACTION_STOP_UI");
@@ -367,6 +560,11 @@ public class ScreenCaptureService extends Service {
             streamingServer = null;
         }
 
+        if (audioStreamingServer != null) {
+            audioStreamingServer.stop();
+            audioStreamingServer = null;
+        }
+
         // Restart streaming server so it's ready to listen for new client connections
         StreamingServer.getInstance().start();
 
@@ -377,6 +575,31 @@ public class ScreenCaptureService extends Service {
                 Thread.currentThread().interrupt();
             }
             encoderThread = null;
+        }
+
+        if (audioThread != null) {
+            try {
+                audioThread.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            audioThread = null;
+        }
+
+        if (audioRecord != null) {
+            try {
+                audioRecord.stop();
+                audioRecord.release();
+            } catch (Exception ignored) {}
+            audioRecord = null;
+        }
+
+        if (audioEncoder != null) {
+            try {
+                audioEncoder.stop();
+                audioEncoder.release();
+            } catch (Exception ignored) {}
+            audioEncoder = null;
         }
 
         if (virtualDisplay != null) {
