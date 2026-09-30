@@ -2,4 +2,36 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+
+    <!-- Theme Colors (Light) -->
+    <color name="primary">#2563EB</color>
+    <color name="on_primary">#FFFFFF</color>
+    <color name="primary_container">#DBEAFE</color>
+    <color name="on_primary_container">#1E40AF</color>
+
+    <color name="background">#F8FAFC</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_container">#F8FAFC</color>
+    <color name="surface_container_high">#F1F5F9</color>
+    <color name="stroke_card">#E2E8F0</color>
+    <color name="divider">#E2E8F0</color>
+
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#64748B</color>
+
+    <!-- Semantic Status Colors -->
+    <color name="status_container">#FEF3C7</color>
+    <color name="status_stroke">#FDE68A</color>
+    <color name="status_text">#92400E</color>
+    <color name="status_dot">#F59E0B</color>
+
+    <color name="status_active_container">#D1FAE5</color>
+    <color name="status_active_stroke">#A7F3D0</color>
+    <color name="status_active_text">#065F46</color>
+    <color name="status_active_dot">#10B981</color>
+
+    <color name="error">#DC2626</color>
+    <color name="on_error">#FFFFFF</color>
+    <color name="error_container">#FEE2E2</color>
+    <color name="on_error_container">#991B1B</color>
 </resources>

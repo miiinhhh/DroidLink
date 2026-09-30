@@ -27,6 +27,9 @@ import android.util.Log;
 import android.view.Surface;
 
 import java.nio.ByteBuffer;
+import android.app.PendingIntent;
+import com.example.droidlink.R;
+import com.example.droidlink.ui.MainActivity;
 
 public class ScreenCaptureService extends Service {
 
@@ -57,28 +60,53 @@ public class ScreenCaptureService extends Service {
     private int screenHeight;
     private int screenDensity;
 
+    public static final String ACTION_STOP_SERVICE = "com.example.droidlink.ACTION_STOP_SERVICE";
+
     @Override
     public void onCreate() {
         super.onCreate();
 
         createNotificationChannel();
 
-        Notification.Builder notificationBuilder;
+        Intent openAppIntent = new Intent(this, MainActivity.class);
+        openAppIntent.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent contentPendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
+        );
 
+        Intent stopIntent = new Intent(this, ScreenCaptureService.class);
+        stopIntent.setAction(ACTION_STOP_SERVICE);
+        PendingIntent stopPendingIntent = PendingIntent.getService(
+                this,
+                1,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_IMMUTABLE : 0)
+        );
+
+        Notification.Builder notificationBuilder;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            notificationBuilder =
-                    new Notification.Builder(this, CHANNEL_ID);
+            notificationBuilder = new Notification.Builder(this, CHANNEL_ID);
         } else {
-            notificationBuilder =
-                    new Notification.Builder(this);
+            notificationBuilder = new Notification.Builder(this);
         }
 
-        Notification notification =
-                notificationBuilder
-                        .setContentTitle("DroidLink")
-                        .setContentText("Screen mirroring & audio is active")
-                        .setSmallIcon(android.R.drawable.ic_menu_view)
-                        .build();
+        Notification.Action stopAction = new Notification.Action.Builder(
+                android.R.drawable.ic_menu_close_clear_cancel,
+                getString(R.string.notification_stop),
+                stopPendingIntent
+        ).build();
+
+        Notification notification = notificationBuilder
+                .setContentTitle(getString(R.string.notification_title))
+                .setContentText(getString(R.string.notification_content))
+                .setSmallIcon(R.drawable.ic_cast)
+                .setContentIntent(contentPendingIntent)
+                .addAction(stopAction)
+                .setOngoing(true)
+                .build();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             startForeground(
@@ -100,6 +128,12 @@ public class ScreenCaptureService extends Service {
             int startId) {
 
         if (intent == null) {
+            return START_NOT_STICKY;
+        }
+
+        if (ACTION_STOP_SERVICE.equals(intent.getAction())) {
+            Log.d(TAG, "Stop action requested from notification");
+            stopSelf();
             return START_NOT_STICKY;
         }
 

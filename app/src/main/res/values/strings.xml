@@ -1,3 +1,48 @@
 <resources>
     <string name="app_name">DroidLink</string>
+    <string name="app_tagline">Phát màn hình &amp; âm thanh tới máy tính qua Wi-Fi</string>
+    
+    <!-- Status messages -->
+    <string name="status_waiting">Đang chờ kết nối từ máy tính...</string>
+    <string name="status_connecting">Máy tính đã kết nối, xin quyền...</string>
+    <string name="status_mirroring">Đang phát màn hình &amp; âm thanh</string>
+    <string name="status_permission_denied">Đã từ chối cấp quyền phát màn hình</string>
+    <string name="status_disconnected">Chưa kết nối</string>
+
+    <!-- Network Info Card -->
+    <string name="section_network_info">Thông tin kết nối mạng</string>
+    <string name="label_wifi">Mạng Wi-Fi</string>
+    <string name="label_ip_address">Địa chỉ IP điện thoại</string>
+    <string name="label_port">Cổng truyền (Video / Audio)</string>
+    <string name="port_value">8080 / 8081</string>
+    <string name="action_copy_ip">Sao chép</string>
+    <string name="toast_ip_copied">Đã sao chép IP vào bộ nhớ tạm</string>
+    <string name="wifi_checking">Đang kiểm tra...</string>
+    <string name="wifi_not_connected">Chưa kết nối Wi-Fi</string>
+
+    <!-- Mirroring Card -->
+    <string name="section_mirroring">Truyền màn hình (Screen Mirroring)</string>
+    <string name="desc_mirroring">Truyền hình ảnh và âm thanh trực tiếp đến laptop qua Wi-Fi thời gian thực với độ trễ thấp.</string>
+    <string name="btn_start_mirroring">Bắt đầu phát màn hình</string>
+    <string name="btn_stop_mirroring">Dừng phát màn hình</string>
+
+    <!-- Stats -->
+    <string name="stats_title">Thông số stream trực tiếp</string>
+    <string name="stats_resolution">Độ phân giải</string>
+    <string name="stats_resolution_value">Tự động (Full HD)</string>
+    <string name="stats_fps">Khung hình</string>
+    <string name="stats_fps_value">30 FPS</string>
+    <string name="stats_bitrate">Băng thông</string>
+    <string name="stats_bitrate_value">4.0 Mbps</string>
+
+    <!-- Guide -->
+    <string name="section_guide">Hướng dẫn kết nối</string>
+    <string name="guide_step1">1. Đảm bảo điện thoại và máy tính kết nối chung mạng Wi-Fi.</string>
+    <string name="guide_step2">2. Mở ứng dụng nhận trên laptop (hoặc nhập IP điện thoại ở trên).</string>
+    <string name="guide_step3">3. Nhấn \"Bắt đầu phát màn hình\" và chọn chấp nhận cấp quyền.</string>
+
+    <!-- Notification -->
+    <string name="notification_title">DroidLink</string>
+    <string name="notification_content">Đang phát màn hình &amp; âm thanh đến máy tính</string>
+    <string name="notification_stop">Dừng phát</string>
 </resources>
